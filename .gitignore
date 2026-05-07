@@ -1,0 +1,8 @@
+# Folders
+reference_images/
+test_images/
+train_images/
+
+# Files
+sample_submission.csv
+train.csv
