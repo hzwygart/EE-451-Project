@@ -1,8 +1,21 @@
-# Folders
+# Data folders
 reference_images/
 test_images/
 train_images/
 
-# Files
+# Data files
 sample_submission.csv
 train.csv
+
+# Submission output
+submission.csv
+submission_test.csv
+submission_small.csv
+submission_run.log
+
+# Python
+__pycache__/
+*.pyc
+
+# Claude worktree internals
+.claude/
