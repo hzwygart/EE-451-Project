@@ -3,7 +3,8 @@ import os
 import numpy as np
 from PIL import Image
 
-from .segmentation import detect_cards, detect_tokens
+from .segmentation import detect_cards, detect_yellow_token, detect_dark_token
+from .description import is_dark_token
 from .classification import classify_card, build_templates
 from .game_state import assign_game_state
 
@@ -19,17 +20,30 @@ def get_templates(ref_dir="reference_images"):
 
 
 def predict_image(img, templates):
-    cards = detect_cards(img)
-    # Classify each detected card and keep only those that match a template confidently.
-    classified = []
-    for c in cards:
+    raw = detect_cards(img)
+    classified, tokens = [], []
+    # Some dark tokens already show up as a "card" cluster (they are card-
+    # sized). Split each candidate into either a token or a real card first.
+    for c in raw:
+        if is_dark_token(c["crop"]):
+            tokens.append({"centroid": c["centroid"], "area": c["rect"][1][0] * c["rect"][1][1],
+                            "kind": "dark"})
+            continue
         label = classify_card(c["crop"], templates)[0]
         if label is not None:
             classified.append({**c, "label": label})
-    # Tokens are detected after the phantom rejection so that a misclassified
-    # token (initially seen as a card and then dropped) is not excluded.
-    tokens = detect_tokens(img, cards=classified)
-    state = assign_game_state(classified, tokens, img.shape)
+    # Dedicated detectors for tokens that the card pass misses entirely:
+    # the hue-cut dark mask in the card pipeline skips neutral grays, so the
+    # dark domino sometimes isn't picked up there.
+    tokens.extend(detect_dark_token(img, cards=classified))
+    tokens.extend(detect_yellow_token(img, cards=classified))
+    # Drop duplicates that landed within a few px of each other.
+    dedup = []
+    for t in tokens:
+        if any(abs(t["centroid"][0] - u["centroid"][0]) + abs(t["centroid"][1] - u["centroid"][1]) < 60 for u in dedup):
+            continue
+        dedup.append(t)
+    state = assign_game_state(classified, dedup, img.shape)
     center = state["center"]["label"] if state["center"] is not None else "EMPTY"
     hands = {}
     for p in (1, 2, 3, 4):

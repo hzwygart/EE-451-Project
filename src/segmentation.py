@@ -201,40 +201,84 @@ def _card_exclusion_mask(shape, cards, expand=30):
     return mask.astype(bool)
 
 
-def detect_tokens(img, cards=None):
-    """Tokens are small dark or yellow blobs outside any detected card."""
-    small = _downsample(img)
-    h, s, v = _hsv(small)
-    dark = (v < 0.45) & (s < 0.45)
-    yellow = (h > 0.10) & (h < 0.20) & (s > 0.55) & (v > 0.55)
-    m = (dark | yellow)
+def detect_dark_token(img, cards=None):
+    """Find a solid dark token block (used on the white-table images).
+
+    The token is a domino-sized dark grey rectangle with no internal colour.
+    Our card mask uses a hue cut that excludes neutral grays, so it can miss
+    this token entirely — this detector uses a hue-free dark threshold and
+    requires the blob to be card-sized, rectangular, and uncoloured.
+    """
+    h, s, v = _hsv(img)
+    dark = (v < 0.45) & (s < 0.30)
     if cards is not None:
-        # Build exclusion in the downsampled coordinate system.
-        small_cards = [{"rect": ((c["rect"][0][0] / DOWNSAMPLE, c["rect"][0][1] / DOWNSAMPLE),
-                                   (c["rect"][1][0] / DOWNSAMPLE, c["rect"][1][1] / DOWNSAMPLE),
-                                   c["rect"][2])} for c in cards]
-        m = m & ~_card_exclusion_mask(small.shape, small_cards, expand=40 // DOWNSAMPLE)
-    m = binary_closing(m, disk(max(1, 3 // DOWNSAMPLE)))
-    m = remove_small_objects(m, min_size=TOKEN_AREA[0])
+        dark = dark & ~_card_exclusion_mask(img.shape, cards, expand=20)
+    dark = binary_closing(dark, disk(4))
+    dark = remove_small_objects(dark, min_size=8000)
+    cnts, _ = cv2.findContours(dark.astype(np.uint8) * 255,
+                                cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     out = []
-    m_u8 = m.astype(np.uint8) * 255
-    cnts, _ = cv2.findContours(m_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     for c in cnts:
         a = cv2.contourArea(c)
-        if not (TOKEN_AREA[0] <= a <= TOKEN_AREA[1]):
+        if not (8000 < a < 80000):
             continue
         rect = cv2.minAreaRect(c)
         (cx, cy), (w, hh), _ = rect
         if min(w, hh) < 1:
             continue
-        if max(w, hh) / min(w, hh) > TOKEN_ASPECT_MAX:
+        aspect = max(w, hh) / min(w, hh)
+        if aspect > 2.2:
             continue
         rect_area = w * hh
-        if rect_area < 1 or a / rect_area < 0.65:
+        if a / rect_area < 0.75:
             continue
-        # Convert back to original-image coordinates.
-        out.append({"centroid": (cy * DOWNSAMPLE, cx * DOWNSAMPLE), "area": a * DOWNSAMPLE ** 2})
+        # Reject if there is saturated colour inside the bbox (wild / draw_4).
+        y0, y1 = max(0, int(cy - hh / 2)), min(img.shape[0], int(cy + hh / 2))
+        x0, x1 = max(0, int(cx - w / 2)), min(img.shape[1], int(cx + w / 2))
+        if x1 > x0 and y1 > y0:
+            inner_s = s[y0:y1, x0:x1]
+            if (inner_s > 0.30).mean() > 0.05:
+                continue
+        out.append({"centroid": (cy, cx), "area": a, "kind": "dark"})
     return out
+
+
+def detect_yellow_token(img, cards=None):
+    """Find the yellow disc token (used on the leaf-pattern background).
+
+    The disc is a saturated, near-round yellow blob sitting on its own —
+    distinct from yellow cards (much larger and accompanied by a white oval).
+    """
+    h, s, v = _hsv(img)
+    yellow = (h > 0.11) & (h < 0.18) & (s > 0.70) & (v > 0.70)
+    if cards is not None:
+        yellow = yellow & ~_card_exclusion_mask(img.shape, cards, expand=20)
+    yellow = remove_small_objects(yellow, min_size=2000)
+    yellow = binary_closing(yellow, disk(3))
+    cnts, _ = cv2.findContours(yellow.astype(np.uint8) * 255,
+                                cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    out = []
+    for c in cnts:
+        a = cv2.contourArea(c)
+        if not (2500 < a < 25000):
+            continue
+        rect = cv2.minAreaRect(c)
+        (cx, cy), (w, hh), _ = rect
+        if min(w, hh) < 1:
+            continue
+        aspect = max(w, hh) / min(w, hh)
+        if aspect > 1.35:
+            continue
+        fill = a / (w * hh)
+        if fill < 0.70:
+            continue
+        out.append({"centroid": (cy, cx), "area": a, "kind": "yellow"})
+    return out
+
+
+# Backwards-compatible alias used by older code / the notebook.
+def detect_tokens(img, cards=None):
+    return detect_yellow_token(img, cards)
 
 
 def detect_scene(img, out_w=160, out_h=240):

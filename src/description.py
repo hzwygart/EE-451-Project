@@ -1,4 +1,9 @@
-"""Per-card descriptors: dominant color + grayscale symbol signature for matching."""
+"""Per-card descriptors: dominant color + grayscale symbol signature for matching.
+
+Also exposes ``is_dark_token`` — a quick test that distinguishes a solid
+dark domino-shaped token (no internal colour) from a wild / draw_4 card
+(dark frame with a rainbow oval inside).
+"""
 import cv2
 import numpy as np
 from skimage.color import rgb2hsv
@@ -32,6 +37,24 @@ def card_color(crop):
         "b": ((hh > 0.48) & (hh < 0.70)).mean(),
     }
     return max(scores, key=scores.get)
+
+
+def is_dark_token(crop):
+    """A dark token (domino-like block) is a solid dark rectangle with no
+    colored content. Wild and draw_4 cards are also dark but contain a
+    rainbow oval or colored '+4' design — those have many saturated pixels.
+
+    We look across the full crop (not just a tight central window) because the
+    distinctive coloured marks of wild / draw_4 reach close to the card edges.
+    """
+    hsv = rgb2hsv(crop)
+    s, v = hsv[:, :, 1], hsv[:, :, 2]
+    H, W = v.shape
+    iv = v[int(0.10 * H):int(0.90 * H), int(0.10 * W):int(0.90 * W)]
+    is_ = s[int(0.10 * H):int(0.90 * H), int(0.10 * W):int(0.90 * W)]
+    dark_frac = (iv < 0.55).mean()
+    sat_frac = (is_ > 0.30).mean()
+    return dark_frac > 0.80 and sat_frac < 0.05
 
 
 def symbol_signature(crop, size=96):
